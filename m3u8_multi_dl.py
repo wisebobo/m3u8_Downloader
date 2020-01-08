@@ -47,35 +47,40 @@ class m3u8_Downloader:
         session.mount('https://', adapter)
         return session
 
-    def download_by_process(self, no_of_process=50):
+    def download_single_ts(self, ts_file, ts_count=None, process_lock=None):
+        retry = 3
+        while retry:
+            try:
+                url = urljoin(self.m3u8.base_uri, ts_file)
+                file_name = ts_file.split('/')[-1]
+                r = self.session.get(url, timeout=20)
+                if r.ok:
+                    outFileName = os.path.join(self.outDir, file_name)
+                    with open(outFileName, 'wb') as f:
+                        f.write(r.content)
 
-        def download(ts_file, ts_count, process_lock):
-            retry = 3
-            while retry:
-                try:
-                    url = urljoin(self.m3u8.base_uri, ts_file)
-                    r = self.session.get(url, timeout=20)
-                    if r.ok:
-                        outFileName = os.path.join(self.outDir, ts_file)
-                        with open(outFileName, 'wb') as f:
-                            f.write(r.content)
-
+                    if ts_count:
                         process_lock.acquire()
                         ts_count.value = ts_count.value + 1
                         process_lock.release()
                         self.show_progress(ts_count.value / self.ts_total)
-                        break
-                except Exception as e:
-                    print(e)
-                    retry -= 1
+                    else:
+                        self.ts_count = self.ts_count + 1
+                        self.show_progress(self.ts_count / self.ts_total)
+                    break
+            except Exception as e:
+                print(e)
+                retry -= 1
 
+
+    def download_by_process(self, no_of_process=50):
         print('\nStart to download')
         pool = Pool(processes=no_of_process)
         ts_count = Manager().Value('i', 0)
         process_lock = Manager().Lock()
 
         for index, ts_file in enumerate(self.m3u8.files):
-            _ = pool.apply_async(download, (ts_file, ts_count, process_lock))
+            _ = pool.apply_async(self.download_single_ts, (ts_file, ts_count, process_lock))
 
         pool.close()
         pool.join()
@@ -90,22 +95,7 @@ class m3u8_Downloader:
             while True:
                 if not self.q.empty():
                     ts_file = self.q.get()
-                    retry = 3
-                    while retry:
-                        try:
-                            url = urljoin(self.m3u8.base_uri, ts_file)
-                            r = self.session.get(url, timeout=20)
-                            if r.ok:
-                                outFileName = os.path.join(self.outDir, ts_file)
-                                with open(outFileName, 'wb') as f:
-                                    f.write(r.content)
-
-                                self.ts_count = self.ts_count + 1
-                                self.show_progress(self.ts_count / self.ts_total)
-                                break
-                        except Exception as e:
-                            print(e)
-                            retry -= 1
+                    self.download_single_ts(ts_file)
                 else:
                     break
 
@@ -132,7 +122,8 @@ class m3u8_Downloader:
         outFileName = os.path.join(self.outDir, self.outName + '.mp4')
 
         for index, ts_file in enumerate(self.m3u8.files):
-            inFileName = os.path.join(self.outDir, ts_file)
+            file_name = ts_file.split('/')[-1]
+            inFileName = os.path.join(self.outDir, file_name)
 
             percent = (index + 1) / self.ts_total
             self.show_progress(percent)
@@ -153,5 +144,5 @@ if __name__ == '__main__':
     m3u8_obj = m3u8_Downloader(uri='https://youku.cdn4-okzy.com/20200106/3620_6970c056/1000k/hls/index.m3u8',
                                outDir='E:/Python/MyProgram/temp/m38u_download/',
                                outName='丫鬟大联盟粤语06',
-                               type=1,
+                               type=2,
                                no=50)
