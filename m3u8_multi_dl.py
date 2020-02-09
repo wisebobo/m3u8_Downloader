@@ -4,6 +4,7 @@ from urllib.parse import urljoin
 import m3u8
 import os, sys, requests, time
 import queue, threading
+from Crypto.Cipher import AES
 
 class m3u8_Downloader:
 
@@ -17,28 +18,50 @@ class m3u8_Downloader:
             if outDir and not os.path.isdir(outDir):
                 os.makedirs(outDir)
 
-            self.m3u8 = m3u8.load(uri=uri, timeout=10)
+            retry = 30
+            while retry:
+                try:
+                    self.m3u8 = m3u8.load(uri=uri, timeout=10)
 
-            if self.m3u8:
-                self.ts_count = 0
-                self.ts_total = len(self.m3u8.files)
+                    if self.m3u8:
 
-                self.session = self.get_session(50, 50, 10)
+                        if self.m3u8.keys:
+                            for key in self.m3u8.keys:
+                                if key:
+                                    self.decrypt_Key = requests.get(key.uri).content
+                                    self.decrypt_method = key.method
+                                    self.decrypt_iv = key.iv
+                                    break
+                                else:
+                                    self.decrypt_Key = None
+                        else:
+                            self.decrypt_Key = None
 
-                print('Total ts count = ' + str(self.ts_total))
+                        self.ts_count = 0
+                        self.ts_total = len(self.m3u8.files)
 
-                # Multiple threads
-                if type == 1:
-                    self.q_lock = threading.Lock()
-                    self.q = queue.Queue(self.ts_total)
+                        self.session = self.get_session(50, 50, 10)
 
-                    for index, ts_file in enumerate(self.m3u8.files):
-                        self.q.put(ts_file)
+                        print('Total ts count = ' + str(self.ts_total))
 
-                    self.download_by_thread(no_of_thread=no)
-                # Multiple processes
-                elif type == 2:
-                    self.download_by_process(no_of_process=no)
+                        # Multiple threads
+                        if type == 1:
+                            self.q_lock = threading.Lock()
+                            self.q = queue.Queue(self.ts_total)
+
+                            for index, ts_file in enumerate(self.m3u8.files):
+                                self.q.put(ts_file)
+
+                            self.download_by_thread(no_of_thread=no)
+                        # Multiple processes
+                        elif type == 2:
+                            self.download_by_process(no_of_process=no)
+
+                        break
+
+                except Exception as e:
+                    print(e)
+                    retry -= 1
 
     def get_session(self, pool_connections, pool_maxsize, max_retries):
         session = requests.Session()
@@ -46,6 +69,14 @@ class m3u8_Downloader:
         session.mount('http://', adapter)
         session.mount('https://', adapter)
         return session
+
+    def decrypt_AES(self, key, content, iv=None):
+        if iv:
+            cryptor = AES.new(key, AES.MODE_CBC, iv)
+        else:
+            cryptor = AES.new(key, AES.MODE_CBC, key)
+
+        return cryptor.decrypt(content)
 
     def download_single_ts(self, ts_file, ts_count=None, process_lock=None):
         retry = 3
@@ -55,9 +86,17 @@ class m3u8_Downloader:
                 file_name = ts_file.split('/')[-1]
                 r = self.session.get(url, timeout=20)
                 if r.ok:
+                    if self.decrypt_Key:
+                        if self.decrypt_method == 'AES-128':
+                            out_content = self.decrypt_AES(self.decrypt_Key, r.content, self.decrypt_iv)
+                        else:
+                            out_content = r.content
+                    else:
+                        out_content = r.content
+
                     outFileName = os.path.join(self.outDir, file_name)
                     with open(outFileName, 'wb') as f:
-                        f.write(r.content)
+                        f.write(out_content)
 
                     if ts_count:
                         process_lock.acquire()
